@@ -1,0 +1,126 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-conf
+data:
+  nginx.conf: |
+    user nginx;
+    worker_processes  3;
+    error_log  /var/log/nginx/error.log;
+    events {
+      worker_connections  10240;
+    }
+    http {
+      log_format  main
+              'remote_addr:$remote_addr\t'
+              'time_local:$time_local\t'
+              'method:$request_method\t'
+              'uri:$request_uri\t'
+              'host:$host\t'
+              'status:$status\t'
+              'bytes_sent:$body_bytes_sent\t'
+              'referer:$http_referer\t'
+              'useragent:$http_user_agent\t'
+              'forwardedfor:$http_x_forwarded_for\t'
+              'request_time:$request_time';
+
+      access_log	/var/log/nginx/access.log main;
+
+      server {
+          listen       80;
+          server_name  _;
+
+          location / {
+              root   html;
+              index  index.html index.htm;
+          }
+      }
+      include /etc/nginx/runbot.conf;
+    }
+  runbot.conf: |
+    server {
+      listen 80;
+      server_name runbot.dev.erpgo.sh;
+      charset utf-8;
+      location = /favicon.ico {
+          return 404;
+      }
+      proxy_buffers 16 64k;
+      proxy_buffer_size 128k;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP       $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_read_timeout          600s;
+      client_max_body_size 100m;
+      location / {
+      proxy_pass http://localhost:8080;
+      }
+    }
+---
+apiVersion: apps/v1beta1
+kind: Deployment
+metadata:
+  name: nginx
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - mountPath: /etc/nginx # mount nginx-conf volumn to /etc/nginx
+          readOnly: true
+          name: nginx-conf
+        - mountPath: /var/log/nginx
+          name: log
+      - name: odoo-runbot
+        image: itprojectsllc/odoo-runbot-docker
+        ports:
+        - containerPort: 8069
+        - containerPort: 8080
+        env:
+          - name: HOST
+            value: localhost
+      - name: db
+        image: postgres:9.5
+        env:
+          - name: POSTGRES_USER
+            value: odoo
+          - name: POSTGRES_PASSWORD
+            value: odoo
+      - name: postfix
+        image: itprojectsllc/postfix-docker
+        env:
+          - name: MAILNAME
+            value: runbot.dev.erpgo.sh
+      volumes:
+      - name: nginx-conf
+        configMap:
+          name: nginx-conf # place ConfigMap `nginx-conf` on /etc/nginx
+          items:
+            - key: nginx.conf
+              path: nginx.conf
+            - key: runbot.conf
+              path: runbot.conf
+      - name: log
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 80
+  selector:
+    app: nginx
+
